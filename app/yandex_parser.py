@@ -165,10 +165,12 @@ def build_deal_fields(
 
     phone = parsed.get("phone", "").strip()
     if phone:
-        fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
+        # Bitrix deal has no native PHONE field; use UF_CRM_RT_TEL_CONT (verified
+        # 2026-06-27 via crm.deal.userfield.list). STRING, not multi.
+        fields["UF_CRM_RT_TEL_CONT"] = phone
     email = parsed.get("email", "").strip()
     if email:
-        fields["EMAIL"] = [{"VALUE": email, "VALUE_TYPE": "WORK"}]
+        fields["UF_CRM_RT_EMAIL_CONT"] = email
     # Custom fields commonly used by 2KAD CRM — write only if the operator
     # confirms the UF codes exist on CATEGORY_ID=3. Safe-no-op if absent.
     # These are intentionally commented to avoid crm.deal.add 400s on

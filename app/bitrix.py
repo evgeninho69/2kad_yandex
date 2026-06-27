@@ -30,6 +30,17 @@ class BitrixError(RuntimeError):
     """Raised when Bitrix REST returns an error response."""
 
 
+def _stringify(value: Any) -> str:
+    """Bitrix form-encoded params: strings, ints, bools, JSON for nested."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
 class BitrixClient:
     """Thin REST client. Auth is decided once at construction time."""
 
@@ -106,18 +117,47 @@ class BitrixClient:
     # --- core ---------------------------------------------------------------
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Invoke a Bitrix REST method and return the result payload."""
+        """Invoke a Bitrix REST method and return the result payload.
+
+        Bitrix on-prem REST accepts params as either JSON or form-encoded.
+        Cookie-mode requires form-encoded; webhook-mode accepts JSON but
+        some endpoints are picky about how nested `fields` are encoded.
+
+        Strategy:
+          - Webhook: POST with JSON body (httpx serialises the dict).
+          - Cookie: form-encode, but expand nested dicts (`fields[KEY]=v`)
+            because urlencode(dict) would serialise the inner dict as a
+            string and Bitrix would complain "Parameter 'fields' must be
+            array" (verified 2026-06-27 against bitrix.a2kad.ru).
+        """
         params = params or {}
         if self._mode == "webhook":
             url = f"{self._webhook_url}/{method}.json"
             response = self._client.post(url, json=params)
         else:
             url = f"{self.base_url}/rest/{method}.json"
-            body = dict(params)
-            body["sessid"] = self._sessid
+            encoded: list[tuple[str, str]] = []
+            for key, value in params.items():
+                if isinstance(value, dict):
+                    for sub_key, sub_value in value.items():
+                        encoded.append((f"{key}[{sub_key}]", _stringify(sub_value)))
+                elif isinstance(value, list):
+                    # list of dicts: items[0][key]=v
+                    for idx, item in enumerate(value):
+                        if isinstance(item, dict):
+                            for sub_key, sub_value in item.items():
+                                encoded.append(
+                                    (f"{key}[{idx}][{sub_key}]", _stringify(sub_value))
+                                )
+                        else:
+                            encoded.append((f"{key}[]", _stringify(item)))
+                else:
+                    encoded.append((key, _stringify(value)))
+            encoded.append(("sessid", self._sessid))
+            body = urlencode(encoded)
             response = self._client.post(
                 url,
-                content=urlencode(body),
+                content=body,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 cookies=self._cookies,
             )
