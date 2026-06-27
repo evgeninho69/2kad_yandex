@@ -57,21 +57,36 @@ class BitrixClient:
                 payload = json.loads(session_json)
             except json.JSONDecodeError as exc:
                 raise BitrixError(f"BITRIX_SESSION_JSON is not valid JSON: {exc}") from exc
-            cookies = payload.get("cookies") or payload
-            sessid = payload.get("sessid") or cookies.get("BITRIX_SM_SESSID")
+            cookies_dict: dict[str, str] = {}
+            # Accepted shapes:
+            #   A) {"cookies": {"k":"v",...}, "sessid": "..."}
+            #   B) {"cookie": "BITRIX_SM_LOGIN=...; BITRIX_SM_UIDH=...; ...", "sessid": "..."}
+            #   C) flat dict {"k":"v",...}
+            if isinstance(payload.get("cookies"), dict):
+                cookies_dict = {str(k): str(v) for k, v in payload["cookies"].items()}
+            elif isinstance(payload.get("cookie"), str):
+                for chunk in payload["cookie"].split(";"):
+                    chunk = chunk.strip()
+                    if not chunk or "=" not in chunk:
+                        continue
+                    k, _, v = chunk.partition("=")
+                    cookies_dict[k.strip()] = v.strip()
+            else:
+                # Treat flat dict as cookies.
+                for k, v in payload.items():
+                    if k in ("cookie", "sessid", "created", "source"):
+                        continue
+                    if isinstance(v, (str, int, float, bool)):
+                        cookies_dict[str(k)] = str(v)
+            sessid = payload.get("sessid") or cookies_dict.get("BITRIX_SM_SESSID")
             if not sessid:
                 raise BitrixError(
-                    "BITRIX_SESSION_JSON missing 'sessid' (or cookies.BITRIX_SM_SESSID)"
+                    "BITRIX_SESSION_JSON missing 'sessid' (or BITRIX_SM_SESSID cookie)"
                 )
             self._mode = "cookie"
             self._sessid = sessid
-            cookie_jar: dict[str, str] = {}
-            for k, v in cookies.items():
-                if k == "BITRIX_SM_SESSID":
-                    continue
-                cookie_jar[k] = str(v)
-            self._cookies = cookie_jar
-            logger.info("BitrixClient: cookie mode, sessid=***")
+            self._cookies = cookies_dict
+            logger.info("BitrixClient: cookie mode, sessid=***, cookies=%d", len(cookies_dict))
         else:
             raise BitrixError(
                 "BitrixClient: provide either BITRIX_WEBHOOK_TOKEN or BITRIX_SESSION_JSON"
